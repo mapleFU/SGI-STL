@@ -97,8 +97,8 @@ __STL_BEGIN_NAMESPACE
 #pragma set woff 1174
 #endif
 
-// Malloc-based allocator.  Typically slower than default alloc below.
-// Typically thread-safe and more storage efficient.
+/// Malloc-based allocator.  Typically slower than default alloc below.
+/// Typically thread-safe and more storage efficient.
 #ifdef __STL_STATIC_TEMPLATE_MEMBER_BUG
 # ifdef __DECLARE_GLOBALS_HERE
     void (* __malloc_alloc_oom_handler)() = 0;
@@ -108,8 +108,11 @@ __STL_BEGIN_NAMESPACE
 # endif
 #endif
 
-// SGI STL 第一级配置器
-// 无 “template 类型参数”，“非类型参数 __inst”，完全没有用
+/// SGI STL 第一级配置器
+///  无 “template 类型参数”，“非类型参数 __inst”，完全没有用(mapleFU: 没有用个头啊）
+///
+/// 看起来 __oom_api 是二级，一级的目标依赖直接丢给 malloc 和 free 了
+/// 之前看它是不 free 的，看来不实。
 template <int __inst>
 class __malloc_alloc_template {
 
@@ -151,6 +154,9 @@ public:
 
   // 以下仿真 C++ 的 set_new_handler()，可以通过它指定自己的 out-of-memory handler
   // 为什么不使用 C++ new-handler 机制，因为第一级配置器并没有 ::operator new 来配置内存
+  //
+  // 看来这个是切换 malloc 的 hook, 可以更换二级配置器。
+  // TODO: 弄清楚这个和 new / jemalloc 的级别
   static void (* __set_malloc_handler(void (*__f)()))()
   {
     void (* __old)() = __malloc_alloc_oom_handler;
@@ -160,13 +166,15 @@ public:
 
 };
 
-// malloc_alloc out-of-memory handling
+/// malloc_alloc out-of-memory handling
 
 #ifndef __STL_STATIC_TEMPLATE_MEMBER_BUG
-// 初值为0，由客户自行设定
+// 初值为nullptr，由客户自行设定
 template <int __inst>
-void (* __malloc_alloc_template<__inst>::__malloc_alloc_oom_handler)() = 0;
+void (* __malloc_alloc_template<__inst>::__malloc_alloc_oom_handler)() = nullptr;
 #endif
+
+/// OOM 版本的实现
 
 template <int __inst>
 void*
@@ -177,8 +185,12 @@ __malloc_alloc_template<__inst>::_S_oom_malloc(size_t __n)
 
     // 不断尝试释放、配置
     for (;;) {
+        // first pointing to omm handler.
         __my_malloc_handler = __malloc_alloc_oom_handler;
+        // cannot alloc when `handler` is nullptr.
         if (0 == __my_malloc_handler) { __THROW_BAD_ALLOC; }
+        // call oom handler
+        // TODO: make clear what's it
         (*__my_malloc_handler)();  // 调用处理例程，企图释放内存
         __result = malloc(__n);   // 再次尝试配置内存
         if (__result) return(__result);
@@ -202,7 +214,7 @@ void* __malloc_alloc_template<__inst>::_S_oom_realloc(void* __p, size_t __n)
     }
 }
 
-// 直接将参数 __inst 指定为0
+// 实例化，使 malloc_alloc = template<0>
 typedef __malloc_alloc_template<0> malloc_alloc;
 
 // 单纯地转调用，调用传递给配置器(第一级或第二级)；多一层包装，使 _Alloc 具备标准接口
@@ -287,7 +299,7 @@ typedef malloc_alloc single_client_alloc;
 //    information that we can return the object to the proper free list
 //    without permanently losing part of the object.
 //
-
+//
 // The first template parameter specifies whether more than one thread
 // may use this allocator.  It is safe to allocate an object from
 // one instance of a default_alloc and deallocate it with another
@@ -300,8 +312,8 @@ typedef malloc_alloc single_client_alloc;
 
 #if defined(__SUNPRO_CC) || defined(__GNUC__)
 // breaks if we make these template class members:
-  enum {_ALIGN = 8};
-  enum {_MAX_BYTES = 128};
+  enum {_ALIGN = 8};  // memory align
+  enum {_MAX_BYTES = 128};  // 临界空间
   enum {_NFREELISTS = 16}; // _MAX_BYTES/_ALIGN
 #endif
 
@@ -318,7 +330,7 @@ private:
     enum {_MAX_BYTES = 128}; // 小区区块的上限
     enum {_NFREELISTS = 16}; // _MAX_BYTES/_ALIGN  free-list 的个数
 # endif 
-  // 将任何小额区块的内存需求量上调至 8 的倍数
+  // 将任何小额区块的内存需求量 padding 至 8 的倍数
   static size_t
   _S_round_up(size_t __bytes) 
     { return (((__bytes) + (size_t) _ALIGN-1) & ~((size_t) _ALIGN - 1)); }
@@ -585,15 +597,16 @@ __default_alloc_template<threads, inst>::reallocate(void* __p,
         __STL_MUTEX_INITIALIZER;
 #endif
 
-// 静态成员变量的定义与初值设定
+/// 静态成员变量的定义与初值设定
+// = 0 应该表示 = nullptr, 笔者来修改下试试
 template <bool __threads, int __inst>
-char* __default_alloc_template<__threads, __inst>::_S_start_free = 0;
+char* __default_alloc_template<__threads, __inst>::_S_start_free = nullptr;
 
 template <bool __threads, int __inst>
-char* __default_alloc_template<__threads, __inst>::_S_end_free = 0;
+char* __default_alloc_template<__threads, __inst>::_S_end_free = nullptr;
 
 template <bool __threads, int __inst>
-size_t __default_alloc_template<__threads, __inst>::_S_heap_size = 0;
+size_t __default_alloc_template<__threads, __inst>::_S_heap_size = nullptr;
 
 template <bool __threads, int __inst>
 typename __default_alloc_template<__threads, __inst>::_Obj* __STL_VOLATILE
@@ -617,6 +630,13 @@ __default_alloc_template<__threads, __inst> ::_S_free_list[
 // member templates, partial specialization, partial ordering of function
 // templates, the typename keyword, and the use of the template keyword
 // to refer to a template member of a dependent type.
+//
+// 具体实现的 allocator, 在标准库里是：
+//
+// ```
+// template< class T >
+// struct allocator;
+// ```
 
 #ifdef __STL_USE_STD_ALLOCATORS
 
@@ -695,7 +715,8 @@ inline bool operator!=(const allocator<_T1>&, const allocator<_T2>&)
 // identical, nor does it assume that all of the underlying alloc's
 // member functions are static member functions.  Note, also, that 
 // __allocator<_Tp, alloc> is essentially the same thing as allocator<_Tp>.
-
+//
+// _Alloc 应该就是 SGI-Style 了
 template <class _Tp, class _Alloc>
 struct __allocator {
   _Alloc __underlying_alloc;
@@ -741,6 +762,7 @@ struct __allocator {
   void destroy(pointer __p) { __p->~_Tp(); }
 };
 
+// void 的偏特化版本
 template <class _Alloc>
 class __allocator<void, _Alloc> {
   typedef size_t      size_type;
@@ -804,6 +826,10 @@ inline bool operator!=(const debug_alloc<_Alloc>&,
   return false;
 }
 #endif /* __STL_FUNCTION_TMPL_PARTIAL_ORDER */
+
+// 下面是给 traits 的部分：
+// https://en.cppreference.com/w/cpp/memory/allocator
+// 好像 rebind 都被废弃了...
 
 // Another allocator adaptor: _Alloc_traits.  This serves two
 // purposes.  First, make it possible to write containers that can use
